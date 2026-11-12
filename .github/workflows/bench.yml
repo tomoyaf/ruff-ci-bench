@@ -1,0 +1,71 @@
+# Benchmark copy of astral-sh/ruff at 8c1d3c34e49fb6e02d45f3f22dbf5aa130cbe5dd (2026-11-12), MIT.
+# The job below is ruff's own "cargo test (linux)" job from .github/workflows/ci.yaml at that
+# commit, unchanged except: runs-on is an input, the PR-only annotation step and the dogfood
+# steps after the parser check are left out, rust-cache saves on every run, and rustup is
+# installed when the runner image lacks it. Upstream runs this job on a 16-core Depot runner.
+name: bench
+run-name: "bench ${{ inputs.runs_on }} ${{ inputs.cache_prefix }} ${{ inputs.tag }}"
+on:
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        description: "runs-on label"
+        required: true
+        default: ubuntu-latest
+        type: string
+      cache_prefix:
+        description: "Swatinem/rust-cache prefix-key; a new one forces a cold run"
+        required: false
+        default: v0-rust
+        type: string
+      tag:
+        description: "free text to find the run"
+        required: false
+        default: manual
+        type: string
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  RUSTUP_MAX_RETRIES: 10
+  PYTHON_VERSION: "3.14"
+jobs:
+  cargo-test-linux:
+    name: "cargo test (linux)"
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 150
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Machine
+        run: |
+          n=0; f="$HOME/.cache/ruff-bench/jobs"; mkdir -p "$(dirname "$f")"; [ -f "$f" ] && n=$(cat "$f"); echo $((n+1)) > "$f"
+          echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) runner=$RUNNER_NAME prior_jobs_on_machine=$n"
+          df -h / | tail -1
+      - name: Install rustup when missing
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ruff-linux-debug
+          prefix-key: ${{ inputs.cache_prefix }}
+      - name: "Install Rust toolchain"
+        run: rustup show
+      - uses: ./.github/actions/setup-ruff-workspace
+        with:
+          enable-cache: "true"
+          cache-python: true
+      - name: "Run tests"
+        run: uv run --locked --only-dev cargo insta test --all-features --unreferenced reject --test-runner nextest --disable-nextest-doctest
+      - name: "Run doctests"
+        run: cargo test --doc --all-features
+      - name: "Check parser without stacker"
+        run: cargo check --locked -p ruff_python_parser --no-default-features --all-targets
